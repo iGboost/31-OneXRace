@@ -13,7 +13,12 @@ class GameManager: ObservableObject {
     // Achievement tracking
     private var totalWins: Int = 0
     private var currentWinStreak: Int = 0
+    private var currentLossStreak: Int = 0
     private var highestBet: Int = 0
+    private var totalBetsAmount: Int = 0
+    private var chestsOpenedCount: Int = 0
+    private var lastPlayDate: Date?
+    private var consecutiveDays: Int = 0
     
     private let userDefaults = UserDefaults.standard
     private let coinsKey = "user_coins"
@@ -25,6 +30,11 @@ class GameManager: ObservableObject {
     private let totalWinsKey = "total_wins"
     private let winStreakKey = "win_streak"
     private let highestBetKey = "highest_bet"
+    private let lossStreakKey = "loss_streak"
+    private let totalBetsKey = "total_bets"
+    private let chestsCountKey = "chests_count"
+    private let lastPlayKey = "last_play_date"
+    private let consecutiveDaysKey = "consecutive_days"
     
     private init() {
         loadGameData()
@@ -55,10 +65,31 @@ class GameManager: ObservableObject {
         // Achievements are now loaded in loadGameData
         if achievements.isEmpty {
             achievements = [
+                // Basic achievements
                 Achievement(id: 0, title: "First Win", description: "Win your first race", isUnlocked: false, iconName: "trophy", reward: 200),
                 Achievement(id: 1, title: "High Roller", description: "Bet 500 coins in a single race", isUnlocked: false, iconName: "dollarsign", reward: 300),
                 Achievement(id: 2, title: "Lucky Streak", description: "Win 3 races in a row", isUnlocked: false, iconName: "star", reward: 500),
-                Achievement(id: 3, title: "Story Collector", description: "Unlock 5 race stories", isUnlocked: false, iconName: "book", reward: 400)
+                Achievement(id: 3, title: "Story Collector", description: "Unlock 5 race stories", isUnlocked: false, iconName: "book", reward: 400),
+                
+                // Win achievements
+                Achievement(id: 4, title: "Champion", description: "Win 10 races", isUnlocked: false, iconName: "trophy", reward: 600),
+                Achievement(id: 5, title: "Legend", description: "Win 25 races", isUnlocked: false, iconName: "trophy", reward: 1000),
+                Achievement(id: 6, title: "Perfect Week", description: "Win 7 races in a row", isUnlocked: false, iconName: "star", reward: 800),
+                
+                // Betting achievements  
+                Achievement(id: 7, title: "Penny Pincher", description: "Win with a 10 coin bet", isUnlocked: false, iconName: "dollarsign", reward: 150),
+                Achievement(id: 8, title: "All In", description: "Win with maximum bet", isUnlocked: false, iconName: "dollarsign", reward: 500),
+                Achievement(id: 9, title: "Risk Taker", description: "Total bets over 5000 coins", isUnlocked: false, iconName: "dollarsign", reward: 700),
+                
+                // Collection achievements
+                Achievement(id: 10, title: "Historian", description: "Unlock 10 race stories", isUnlocked: false, iconName: "book", reward: 800),
+                Achievement(id: 11, title: "Librarian", description: "Unlock all race stories", isUnlocked: false, iconName: "book", reward: 1500),
+                Achievement(id: 12, title: "Chest Hunter", description: "Open 20 chests", isUnlocked: false, iconName: "box", reward: 600),
+                
+                // Special achievements
+                Achievement(id: 13, title: "Comeback Kid", description: "Win after 3 losses in a row", isUnlocked: false, iconName: "bolt", reward: 400),
+                Achievement(id: 14, title: "Money Bags", description: "Have 10,000 coins at once", isUnlocked: false, iconName: "dollarsign", reward: 1000),
+                Achievement(id: 15, title: "Dedicated Racer", description: "Play for 7 days in a row", isUnlocked: false, iconName: "calendar", reward: 700)
             ]
         }
     }
@@ -82,11 +113,18 @@ class GameManager: ObservableObject {
     }
     
     func simulateRace(drivers: [Driver], betDriver: Driver, betAmount: Int) -> (winner: Driver, winnings: Int) {
+        // Track total bets
+        totalBetsAmount += betAmount
+        checkAndUnlockAchievements(for: .totalBets(amount: totalBetsAmount))
+        
         // Track highest bet
         if betAmount > highestBet {
             highestBet = betAmount
             checkAndUnlockAchievements(for: .highBet(amount: betAmount))
         }
+        
+        // Check daily play
+        checkDailyPlay()
         
         let winner = drivers.randomElement()!
         let winnings = winner.id == betDriver.id ? Int(Double(betAmount) * 6.7) : 0
@@ -96,16 +134,37 @@ class GameManager: ObservableObject {
             totalWins += 1
             currentWinStreak += 1
             
-            // Check achievements
+            // Check for comeback win
+            if currentLossStreak >= 3 {
+                checkAndUnlockAchievements(for: .comebackWin)
+            }
+            currentLossStreak = 0
+            
+            // Check win achievements
             if totalWins == 1 {
                 checkAndUnlockAchievements(for: .firstWin)
             }
+            checkAndUnlockAchievements(for: .totalWins(count: totalWins))
+            
             if currentWinStreak >= 3 {
                 checkAndUnlockAchievements(for: .winStreak(count: currentWinStreak))
             }
+            
+            // Check bet-specific wins
+            if betAmount <= 10 {
+                checkAndUnlockAchievements(for: .lowBetWin(amount: betAmount))
+            }
+            if betAmount >= 500 {
+                checkAndUnlockAchievements(for: .maxBetWin)
+            }
         } else {
             currentWinStreak = 0
+            currentLossStreak += 1
+            checkAndUnlockAchievements(for: .lossStreak(count: currentLossStreak))
         }
+        
+        // Check money achievement
+        checkAndUnlockAchievements(for: .richPlayer(amount: coins))
         
         saveGameData()
         return (winner, winnings)
@@ -137,9 +196,34 @@ class GameManager: ObservableObject {
         addCoins(reward)
         
         chests[type] = Chest(type: type, lastOpened: Date())
+        chestsOpenedCount += 1
+        checkAndUnlockAchievements(for: .chestsOpened(count: chestsOpenedCount))
+        
         saveGameData()
         
         return reward
+    }
+    
+    // MARK: - Daily Play Tracking
+    private func checkDailyPlay() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        
+        if let lastPlay = lastPlayDate {
+            let lastPlayDay = calendar.startOfDay(for: lastPlay)
+            let daysDiff = calendar.dateComponents([.day], from: lastPlayDay, to: today).day ?? 0
+            
+            if daysDiff == 1 {
+                consecutiveDays += 1
+                checkAndUnlockAchievements(for: .dailyPlayer(days: consecutiveDays))
+            } else if daysDiff > 1 {
+                consecutiveDays = 1
+            }
+        } else {
+            consecutiveDays = 1
+        }
+        
+        lastPlayDate = Date()
     }
     
     // MARK: - Achievements
@@ -162,18 +246,73 @@ class GameManager: ObservableObject {
                     addCoins(achievement.reward)
                     unlocked = true
                 }
-            case .winStreak(let count):
-                if achievement.id == 2 && count >= 3 {
-                    achievements[index] = Achievement(id: achievement.id, title: achievement.title, description: achievement.description, isUnlocked: true, iconName: achievement.iconName, reward: achievement.reward)
-                    addCoins(achievement.reward)
-                    unlocked = true
-                }
             case .storyUnlock(let count):
-                if achievement.id == 3 && count >= 5 {
+                if (achievement.id == 3 && count >= 5) ||
+                   (achievement.id == 10 && count >= 10) ||
+                   (achievement.id == 11 && count >= 18) {
                     achievements[index] = Achievement(id: achievement.id, title: achievement.title, description: achievement.description, isUnlocked: true, iconName: achievement.iconName, reward: achievement.reward)
                     addCoins(achievement.reward)
                     unlocked = true
                 }
+            case .winStreak(let count):
+                if (achievement.id == 2 && count >= 3) ||
+                   (achievement.id == 6 && count >= 7) {
+                    achievements[index] = Achievement(id: achievement.id, title: achievement.title, description: achievement.description, isUnlocked: true, iconName: achievement.iconName, reward: achievement.reward)
+                    addCoins(achievement.reward)
+                    unlocked = true
+                }
+            case .totalWins(let count):
+                if (achievement.id == 4 && count >= 10) ||
+                   (achievement.id == 5 && count >= 25) {
+                    achievements[index] = Achievement(id: achievement.id, title: achievement.title, description: achievement.description, isUnlocked: true, iconName: achievement.iconName, reward: achievement.reward)
+                    addCoins(achievement.reward)
+                    unlocked = true
+                }
+            case .lowBetWin(let amount):
+                if achievement.id == 7 && amount <= 10 {
+                    achievements[index] = Achievement(id: achievement.id, title: achievement.title, description: achievement.description, isUnlocked: true, iconName: achievement.iconName, reward: achievement.reward)
+                    addCoins(achievement.reward)
+                    unlocked = true
+                }
+            case .maxBetWin:
+                if achievement.id == 8 {
+                    achievements[index] = Achievement(id: achievement.id, title: achievement.title, description: achievement.description, isUnlocked: true, iconName: achievement.iconName, reward: achievement.reward)
+                    addCoins(achievement.reward)
+                    unlocked = true
+                }
+            case .totalBets(let amount):
+                if achievement.id == 9 && amount >= 5000 {
+                    achievements[index] = Achievement(id: achievement.id, title: achievement.title, description: achievement.description, isUnlocked: true, iconName: achievement.iconName, reward: achievement.reward)
+                    addCoins(achievement.reward)
+                    unlocked = true
+                }
+            case .chestsOpened(let count):
+                if achievement.id == 12 && count >= 20 {
+                    achievements[index] = Achievement(id: achievement.id, title: achievement.title, description: achievement.description, isUnlocked: true, iconName: achievement.iconName, reward: achievement.reward)
+                    addCoins(achievement.reward)
+                    unlocked = true
+                }
+            case .comebackWin:
+                if achievement.id == 13 {
+                    achievements[index] = Achievement(id: achievement.id, title: achievement.title, description: achievement.description, isUnlocked: true, iconName: achievement.iconName, reward: achievement.reward)
+                    addCoins(achievement.reward)
+                    unlocked = true
+                }
+            case .richPlayer(let amount):
+                if achievement.id == 14 && amount >= 10000 {
+                    achievements[index] = Achievement(id: achievement.id, title: achievement.title, description: achievement.description, isUnlocked: true, iconName: achievement.iconName, reward: achievement.reward)
+                    addCoins(achievement.reward)
+                    unlocked = true
+                }
+            case .dailyPlayer(let days):
+                if achievement.id == 15 && days >= 7 {
+                    achievements[index] = Achievement(id: achievement.id, title: achievement.title, description: achievement.description, isUnlocked: true, iconName: achievement.iconName, reward: achievement.reward)
+                    addCoins(achievement.reward)
+                    unlocked = true
+                }
+            case .lossStreak:
+                // No achievement for loss streaks currently
+                break
             }
         }
         
@@ -191,6 +330,13 @@ class GameManager: ObservableObject {
         userDefaults.set(totalWins, forKey: totalWinsKey)
         userDefaults.set(currentWinStreak, forKey: winStreakKey)
         userDefaults.set(highestBet, forKey: highestBetKey)
+        userDefaults.set(currentLossStreak, forKey: lossStreakKey)
+        userDefaults.set(totalBetsAmount, forKey: totalBetsKey)
+        userDefaults.set(chestsOpenedCount, forKey: chestsCountKey)
+        userDefaults.set(consecutiveDays, forKey: consecutiveDaysKey)
+        if let lastPlayDate = lastPlayDate {
+            userDefaults.set(lastPlayDate, forKey: lastPlayKey)
+        }
         
         // Save achievements
         var achievementsData: [[String: Any]] = []
@@ -218,6 +364,11 @@ class GameManager: ObservableObject {
         totalWins = userDefaults.integer(forKey: totalWinsKey)
         currentWinStreak = userDefaults.integer(forKey: winStreakKey)
         highestBet = userDefaults.integer(forKey: highestBetKey)
+        currentLossStreak = userDefaults.integer(forKey: lossStreakKey)
+        totalBetsAmount = userDefaults.integer(forKey: totalBetsKey)
+        chestsOpenedCount = userDefaults.integer(forKey: chestsCountKey)
+        consecutiveDays = userDefaults.integer(forKey: consecutiveDaysKey)
+        lastPlayDate = userDefaults.object(forKey: lastPlayKey) as? Date
         
         let storiesArray = userDefaults.array(forKey: unlockedStoriesKey) as? [Int] ?? [0]
         unlockedStories = Set(storiesArray)
@@ -226,10 +377,31 @@ class GameManager: ObservableObject {
         if let achievementsData = userDefaults.array(forKey: achievementsKey) as? [[String: Any]] {
             var loadedAchievements: [Achievement] = []
             let defaultAchievements = [
+                // Basic achievements
                 Achievement(id: 0, title: "First Win", description: "Win your first race", isUnlocked: false, iconName: "trophy", reward: 200),
                 Achievement(id: 1, title: "High Roller", description: "Bet 500 coins in a single race", isUnlocked: false, iconName: "dollarsign", reward: 300),
                 Achievement(id: 2, title: "Lucky Streak", description: "Win 3 races in a row", isUnlocked: false, iconName: "star", reward: 500),
-                Achievement(id: 3, title: "Story Collector", description: "Unlock 5 race stories", isUnlocked: false, iconName: "book", reward: 400)
+                Achievement(id: 3, title: "Story Collector", description: "Unlock 5 race stories", isUnlocked: false, iconName: "book", reward: 400),
+                
+                // Win achievements
+                Achievement(id: 4, title: "Champion", description: "Win 10 races", isUnlocked: false, iconName: "trophy", reward: 600),
+                Achievement(id: 5, title: "Legend", description: "Win 25 races", isUnlocked: false, iconName: "trophy", reward: 1000),
+                Achievement(id: 6, title: "Perfect Week", description: "Win 7 races in a row", isUnlocked: false, iconName: "star", reward: 800),
+                
+                // Betting achievements  
+                Achievement(id: 7, title: "Penny Pincher", description: "Win with a 10 coin bet", isUnlocked: false, iconName: "dollarsign", reward: 150),
+                Achievement(id: 8, title: "All In", description: "Win with maximum bet", isUnlocked: false, iconName: "dollarsign", reward: 500),
+                Achievement(id: 9, title: "Risk Taker", description: "Total bets over 5000 coins", isUnlocked: false, iconName: "dollarsign", reward: 700),
+                
+                // Collection achievements
+                Achievement(id: 10, title: "Historian", description: "Unlock 10 race stories", isUnlocked: false, iconName: "book", reward: 800),
+                Achievement(id: 11, title: "Librarian", description: "Unlock all race stories", isUnlocked: false, iconName: "book", reward: 1500),
+                Achievement(id: 12, title: "Chest Hunter", description: "Open 20 chests", isUnlocked: false, iconName: "box", reward: 600),
+                
+                // Special achievements
+                Achievement(id: 13, title: "Comeback Kid", description: "Win after 3 losses in a row", isUnlocked: false, iconName: "bolt", reward: 400),
+                Achievement(id: 14, title: "Money Bags", description: "Have 10,000 coins at once", isUnlocked: false, iconName: "dollarsign", reward: 1000),
+                Achievement(id: 15, title: "Dedicated Racer", description: "Play for 7 days in a row", isUnlocked: false, iconName: "calendar", reward: 700)
             ]
             
             for defaultAchievement in defaultAchievements {
@@ -266,4 +438,13 @@ enum AchievementEvent {
     case highBet(amount: Int)
     case winStreak(count: Int)
     case storyUnlock(count: Int)
+    case totalWins(count: Int)
+    case lowBetWin(amount: Int)
+    case maxBetWin
+    case totalBets(amount: Int)
+    case chestsOpened(count: Int)
+    case comebackWin
+    case richPlayer(amount: Int)
+    case dailyPlayer(days: Int)
+    case lossStreak(count: Int)
 }
